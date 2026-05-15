@@ -7,7 +7,6 @@ path-resolution helper.
 from pathlib import Path
 
 import pytest
-
 from machine import InvalidMachineIdentityError, MachineIdentity
 
 
