@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import socket
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,6 +29,16 @@ NTPOutcome = Literal["ok", "rejected_kod"]
 
 class NTPUnreachableError(RuntimeError):
     """The NTP source could not be reached / returned no usable response."""
+
+
+class NTPStartupError(RuntimeError):
+    """Startup gate failed — the process must refuse to start (FR-022/024)."""
+
+
+class _Measurer(Protocol):
+    source: str
+
+    def measure(self) -> NTPMeasurement: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,3 +116,70 @@ class NTPClient:
                 self._source, offset, measured_at, "rejected_kod", stratum
             )
         return NTPMeasurement(self._source, offset, measured_at, "ok", stratum)
+
+
+class NTPGate:
+    """Startup gate: block until a clean, in-drift measurement (FR-022/024).
+
+    Repeatedly measures until a non-rejected, reachable response arrives.
+    If that response's offset exceeds ``max_drift_seconds`` the process
+    must refuse to start; if no usable response arrives within
+    ``timeout_seconds`` the process must also refuse to start. Either way
+    a single ERROR line names the source and (when known) the offset.
+    """
+
+    def __init__(
+        self,
+        client: _Measurer,
+        *,
+        max_drift_seconds: float,
+        timeout_seconds: float,
+        poll_interval_seconds: float = 1.0,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._client = client
+        self._max_drift = max_drift_seconds
+        self._timeout = timeout_seconds
+        self._poll = poll_interval_seconds
+        self._sleep = sleep
+        self._monotonic = monotonic
+
+    def verify(self) -> NTPMeasurement:
+        deadline = self._monotonic() + self._timeout
+        while True:
+            measurement: NTPMeasurement | None
+            try:
+                measurement = self._client.measure()
+            except NTPUnreachableError:
+                measurement = None
+
+            if measurement is not None and measurement.outcome == "ok":
+                if abs(measurement.offset_seconds) > self._max_drift:
+                    logger.error(
+                        "NTP startup gate FAILED: measured offset %.6fs "
+                        "against source %s exceeds max drift %.3fs — "
+                        "refusing to start (FR-022)",
+                        measurement.offset_seconds,
+                        self._client.source,
+                        self._max_drift,
+                    )
+                    raise NTPStartupError(
+                        f"clock offset {measurement.offset_seconds:.6f}s vs "
+                        f"{self._client.source} exceeds max drift "
+                        f"{self._max_drift}s"
+                    )
+                return measurement
+
+            if self._monotonic() >= deadline:
+                logger.error(
+                    "NTP startup gate FAILED: no usable response from "
+                    "source %s within %.0fs — refusing to start (FR-024)",
+                    self._client.source,
+                    self._timeout,
+                )
+                raise NTPStartupError(
+                    f"NTP source {self._client.source} unreachable/invalid "
+                    f"within {self._timeout}s"
+                )
+            self._sleep(self._poll)
