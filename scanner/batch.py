@@ -1,12 +1,12 @@
 """
-Batch runner: scan watch folder, process each PDF, upload every page.
+Batch runner: scan watch folder, process each PDF/TIFF, upload every page.
 
 Execution steps per run
 -----------------------
 1. Crash recovery — return any in-progress/ files to watch_dir.
 2. Guard — if watch_dir does not exist, log ERROR and return.
-3. Settle filter — skip PDFs modified within file_settle_seconds.
-4. Atomic claim — rename each PDF to in-progress/ (skip on lost-race).
+3. Settle filter — skip files modified within file_settle_seconds.
+4. Atomic claim — rename each file to in-progress/ (skip on lost-race).
 5. Process — call pdf_processor.process_pdf() for each claimed file.
 6. Upload — call uploader.upload_page() for each page.
 7. Disposition — success → processed/; any failure → back to watch_dir.
@@ -28,6 +28,8 @@ from .state import AppState, BatchRunState, FileResult, PageResult
 from .uploader import upload_page
 
 logger = logging.getLogger(__name__)
+
+SUPPORTED_EXTS = {".pdf", ".tif", ".tiff"}
 
 
 def startup(state: AppState) -> None:
@@ -100,7 +102,9 @@ def _recover_inprogress(cfg: Settings) -> list[str]:
     if not inprogress.exists():
         return recovered
     watch_dir = Path(cfg.watch_dir)
-    for stranded in inprogress.glob("*.pdf"):
+    for stranded in inprogress.iterdir():
+        if not stranded.is_file() or stranded.suffix.lower() not in SUPPORTED_EXTS:
+            continue
         dest = watch_dir / stranded.name
         try:
             stranded.rename(dest)
@@ -111,17 +115,19 @@ def _recover_inprogress(cfg: Settings) -> list[str]:
 
 
 def _find_settled_pdfs(watch_dir: Path, cfg: Settings) -> list[Path]:
-    """Return PDFs in watch_dir that have been stable for file_settle_seconds."""
+    """Return PDF/TIFF files in watch_dir that have been stable for file_settle_seconds."""
     settle = cfg.file_settle_seconds
     now = time.time()
     settled = []
-    for pdf in watch_dir.glob("*.pdf"):
-        age = now - pdf.stat().st_mtime
+    for entry in watch_dir.iterdir():
+        if not entry.is_file() or entry.suffix.lower() not in SUPPORTED_EXTS:
+            continue
+        age = now - entry.stat().st_mtime
         if age >= settle:
-            settled.append(pdf)
+            settled.append(entry)
         else:
             logger.debug(
-                "Skipping %s — only %.1fs old (settle=%.1fs)", pdf.name, age, settle
+                "Skipping %s — only %.1fs old (settle=%.1fs)", entry.name, age, settle
             )
     return settled
 

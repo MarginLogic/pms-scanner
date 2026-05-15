@@ -1,48 +1,64 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.0.0 → 2.0.0
+Version change: 2.0.0 → 3.0.0
 Modified principles:
-  - Principle I: "Windows-First, Unattended Operation" → "macOS-First, Unattended Operation"
-    (platform changed from Windows to macOS; supervisor changed from Docker/NSSM to launchd)
-Removed sections:
-  - "Windows Deployment Standards" — replaced by "macOS Deployment Standards"
+  - Principle I: "macOS-First, Unattended Operation" → "Cross-Platform Unattended Operation (macOS + Linux)"
+    (extended platform scope to include Linux; supervision broadened from launchd-only to launchd-on-macOS + systemd-on-Linux; mount-wait requirement generalized — WaitForPaths on macOS, RequiresMountsFor on Linux)
+Renamed/restructured sections:
+  - "macOS Deployment Standards" — narrowed to macOS-specific items only (launchd, plist, WaitForPaths, mount path via Finder/System Settings)
 Added sections:
-  - "macOS Deployment Standards"
+  - "Linux Deployment Standards" — systemd --user unit, RequiresMountsFor, mount via /etc/fstab or systemd .mount unit, equivalent security/health requirements
+  - "Cross-Platform Operational Invariants" — items that hold regardless of OS (no interactive session, env-only secrets, structured logging, /healthz)
 Templates requiring updates:
   - .specify/templates/plan-template.md  ✅ no changes needed — Constitution Check section is generic
   - .specify/templates/spec-template.md  ✅ no changes needed
   - .specify/templates/tasks-template.md ✅ no changes needed
-  - specs/003-we-watch-all/plan.md       ✅ already reflects macOS; Complexity Tracking violation now resolved
+  - specs/003-we-watch-all/plan.md       ✅ remains valid (003 is macOS-only — a permitted subset of allowed platforms)
+  - specs/004-multi-env-uploads/plan.md  ⚠ update Constitution Check from "Deviation accepted" to "Pass" and remove the Linux NUC row from Complexity Tracking
 Follow-up TODOs:
-  - Remove the Complexity Tracking violation entry for Principle I from
-    specs/003-we-watch-all/plan.md — it is no longer a violation under v2.0.0
+  - In specs/004-multi-env-uploads/plan.md: replace the ⚠️ "Deviation accepted" for Principle I with ✅ "Pass" referencing v3.0.0, and delete the "Linux NUC peer" row from the Complexity Tracking table.
 -->
 
 # pms-scanner Constitution
 
 ## Core Principles
 
-### I. macOS-First, Unattended Operation
+### I. Cross-Platform Unattended Operation (macOS + Linux)
 
-This service MUST run reliably as a background process on macOS machines without any
-human interaction. Specific requirements:
+This service MUST run reliably as a background process on macOS or Linux machines
+without any human interaction. The same Python codebase MUST run on both platforms;
+only the supervision layer and mount-wait directive differ. Specific requirements:
 
-- The service MUST handle restarts gracefully via launchd (`KeepAlive: true` in the
-  LaunchAgent plist). No other process supervisor is required or supported.
+- The service MUST handle restarts gracefully via the host's native supervisor:
+  - **macOS**: launchd `LaunchAgent` with `KeepAlive: true`.
+  - **Linux**: systemd `--user` unit (or system unit where appropriate) with
+    `Restart=always` and a backoff interval.
+  No other process supervisor is required or supported on either platform.
 - The service MUST NOT require an interactive session or GUI at any point.
-- All file-system paths MUST be configurable via environment variables — no hard-coded
-  paths (e.g., `/Users/someone/...` or `/Volumes/aria/...`) in source code.
+- All file-system paths MUST be configurable via environment variables — no
+  hard-coded paths (e.g., `/Users/someone/...`, `/Volumes/aria/...`,
+  `/home/someone/...`, `/mnt/...`) in source code.
 - The service MUST recover from transient I/O errors (locked files, network share
   interruptions) without crashing; retry logic with exponential back-off is REQUIRED.
 - Startup and shutdown lifecycle MUST be explicitly managed: log startup success,
   trap SIGTERM/SIGINT, and flush in-flight uploads before exit.
-- The launchd plist MUST use `WaitForPaths` to delay startup until the SMB watch
-  volume is mounted — preventing silent failures on boot before the share is available.
+- The supervisor configuration MUST delay startup until the watch volume(s) are
+  mounted:
+  - **macOS**: launchd plist `WaitForPaths` listing every watch directory.
+  - **Linux**: systemd unit `RequiresMountsFor=` (or a corresponding `.mount` unit
+    dependency) listing every watch directory.
+- The Python code itself MUST remain platform-agnostic; OS-specific behavior is
+  permitted only in clearly bounded modules (e.g., a clock-setting helper) and
+  MUST be feature-detected, never branched on string-matched platform names where
+  a capability check is possible.
 
-**Rationale**: An unattended service that crashes silently causes data loss. Reliability
-and self-recovery are non-negotiable for a production background process running on
-shared office infrastructure.
+**Rationale**: An unattended service that crashes silently causes data loss.
+Reliability and self-recovery are non-negotiable for a production background
+process running on shared office infrastructure. Cross-platform support enables a
+heterogeneous fleet (e.g., Mac mini + Linux NUC) to share workload without
+operational surprises; uniformity of behavior across platforms is enforced by
+shared Python code and matched supervisor semantics.
 
 ### II. Test-Driven Development (NON-NEGOTIABLE)
 
@@ -89,6 +105,9 @@ Every meaningful runtime event MUST be logged at the appropriate level:
 - Log every file detected, upload attempt, upload outcome (success/failure), and retry.
 - Errors MUST include context: file path, HTTP status code, and exception message.
 - Log level MUST be configurable via `LOG_LEVEL` environment variable (default: `INFO`).
+- Where a deployment involves multiple environments (e.g., staging, production) or
+  multiple machines, every log entry MUST be tagged with the environment and machine
+  identity so events can be triaged without ambiguity about source.
 
 **Rationale**: When a service runs unattended, logs are the only window into its
 behaviour. Insufficient logging means silent data loss with no path to diagnosis.
@@ -110,23 +129,57 @@ review:
 implementation time. Accurate, current documentation is the only operational guide
 available without interrupting the original author.
 
+## Cross-Platform Operational Invariants
+
+These apply on **every** supported platform; platform-specific sections below
+augment but do not override them.
+
+- **No interactive session, ever**: the service MUST not require a logged-in user,
+  a TTY, or a GUI. Headless boot to running state is the expected lifecycle.
+- **Secrets via environment only**: `api_token` and every other credential MUST
+  be supplied through environment variables. Secrets MUST NOT be committed to
+  source control, baked into supervisor units, or written to log output.
+- **Health endpoint**: a lightweight `GET /healthz` HTTP endpoint MUST be provided
+  by every running instance so operators can confirm the service is alive without
+  parsing logs.
+- **Path config**: every filesystem path the service touches MUST be configurable;
+  no hard-coded user, mount, or volume paths.
+- **Time discipline**: where scheduling correctness depends on the wall clock
+  across multiple machines, NTP synchronization MUST be required by the service
+  itself (verified at startup, corrected during operation) — not implicitly
+  trusted to the OS alone.
+
 ## macOS Deployment Standards
 
 - **Supported hosts**: macOS 13 (Ventura) or later; Apple Silicon (arm64) and Intel (x86_64).
 - **Service management**: launchd `LaunchAgent` with `KeepAlive: true` is the required
-  deployment method. The plist lives in `~/Library/LaunchAgents/`. No Docker, NSSM,
-  or other supervisors are used or supported.
+  deployment method on macOS. The plist lives in `~/Library/LaunchAgents/`. No Docker,
+  NSSM, or other supervisors are used or supported on macOS.
 - **SMB mount dependency**: The launchd plist MUST include a `WaitForPaths` entry for
-  the watch volume (e.g., `/Volumes/aria/ARIAscans`) so the service does not start
-  until the network share is mounted.
-- **Environment config**: All configuration via `.env` file or system environment
-  variables — never baked into the plist or committed to source control.
-- **Volume mapping**: The watch directory MUST be an SMB share mounted via Finder or
-  System Settings → Login Items; the mount path MUST be documented in `README.md`.
-- **Security**: `api_token` MUST be supplied via environment variable only — never
-  stored in source control, plist files, or log output.
-- **Health monitoring**: A lightweight `GET /healthz` HTTP endpoint MUST be provided
-  so operators can confirm the service is alive without parsing logs.
+  every watch volume (e.g., `/Volumes/aria/ARIAscans-prod`, `/Volumes/aria/ARIAscans-staging`)
+  so the service does not start until the network share(s) are mounted.
+- **Volume mapping**: Watch directories MUST be SMB shares mounted via Finder or
+  System Settings → Login Items; the mount paths MUST be documented in `README.md`.
+
+## Linux Deployment Standards
+
+- **Supported hosts**: Debian 12+ or Ubuntu 22.04 LTS+ on x86_64 (NUC-class hardware
+  is the reference platform).
+- **Service management**: systemd `--user` unit (preferred) or system unit where
+  necessary, with `Restart=always` and a `RestartSec=` backoff (5–30 s recommended).
+  No Docker, supervisord, init.d scripts, or other supervisors are used or
+  supported on Linux.
+- **SMB mount dependency**: The systemd unit MUST declare `RequiresMountsFor=` for
+  every watch volume so the service does not start until the network share(s) are
+  mounted. The mount itself MAY be configured via `/etc/fstab` (with `_netdev` and
+  `x-systemd.automount`) or a dedicated systemd `.mount` unit.
+- **Volume mapping**: Watch directories MUST be SMB shares mounted under
+  `/mnt/` (or another documented root); the mount paths MUST be documented in
+  `README.md` and `docs/systemd-setup.md`.
+- **Privilege scope**: the service runs as the dedicated unprivileged user that
+  owns the `--user` unit; any operation requiring elevated privileges (e.g.,
+  clock correction) MUST be delegated to an explicitly installed, narrowly scoped
+  helper — never run the main process as root.
 
 ## Development Workflow & Quality Gates
 
@@ -153,6 +206,9 @@ available without interrupting the original author.
 - Reviewer MUST verify documentation is current (Principle V).
 - Reviewer MUST verify TDD cycle evidence in the commit history (Principle II).
 - Reviewer MUST confirm quality gates passed (Principle III).
+- Where the PR adds or changes platform-specific deployment artifacts, the reviewer
+  MUST verify both platform sections (macOS and Linux) remain consistent with
+  Principle I — neither platform may regress while the other is improved.
 
 ## Governance
 
@@ -169,4 +225,4 @@ the pms-scanner project.
 - All contributors and AI agents MUST read this constitution before beginning any
   work on the project.
 
-**Version**: 2.0.0 | **Ratified**: 2026-04-08 | **Last Amended**: 2026-04-14
+**Version**: 3.0.0 | **Ratified**: 2026-04-08 | **Last Amended**: 2026-05-15
