@@ -99,3 +99,36 @@ def test_build_runtime_skips_gate_when_not_required(
     # Excess drift would have raised if the gate ran; it didn't.
     assert set(rt.state.per_env) == {"production", "staging"}
     assert any("ntp" in r.message.lower() for r in caplog.records)
+
+
+def test_configure_services_registers_jobs_and_wires_dashboard(
+    tmp_path,
+) -> None:
+    import dashboard
+
+    s = _settings(tmp_path)
+    rt = main_mod.build_runtime(s, ntp_client=_FakeClient(0.0))
+    sched = main_mod.configure_services(rt)
+    try:
+        ids = {j.id for j in sched._scheduler.get_jobs()}
+        assert ids == {"macmini:production", "macmini:staging"}
+        # Dashboard wired to the same runtime state.
+        assert dashboard._settings is s
+        assert dashboard._run_state is rt.state
+    finally:
+        sched.stop()
+        dashboard._settings = None
+        dashboard._run_state = None
+
+
+def test_configure_services_scheduler_supports_legacy_shutdown(
+    tmp_path,
+) -> None:
+    # _shutdown() calls scheduler.shutdown(wait=True); the Scheduler
+    # wrapper must accept that for legacy signal-handler compatibility.
+    s = _settings(tmp_path)
+    rt = main_mod.build_runtime(s, ntp_client=_FakeClient(0.0))
+    sched = main_mod.configure_services(rt)
+    sched.start()
+    sched.shutdown(wait=True)
+    assert sched.running is False
