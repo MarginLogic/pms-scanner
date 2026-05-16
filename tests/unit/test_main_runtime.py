@@ -132,3 +132,25 @@ def test_configure_services_scheduler_supports_legacy_shutdown(
     sched.start()
     sched.shutdown(wait=True)
     assert sched.running is False
+
+
+def test_configure_services_recovers_stranded_before_scheduling(
+    tmp_path,
+) -> None:
+    """Each enabled env's own stranded files return to watch_dir (T042/FR-008)."""
+    import dashboard
+
+    s = _settings(tmp_path)
+    rt = main_mod.build_runtime(s, ntp_client=_FakeClient(0.0))
+    prod = next(e for e in s.environments if e.name == "production")
+    stranded = prod.in_progress_dir(s.machine) / "left_over.pdf"
+    stranded.write_bytes(b"%PDF-1.4 stranded")
+
+    sched = main_mod.configure_services(rt)
+    try:
+        assert (prod.watch_dir / "left_over.pdf").is_file()
+        assert not stranded.exists()
+    finally:
+        sched.stop()
+        dashboard._settings = None
+        dashboard._run_state = None
