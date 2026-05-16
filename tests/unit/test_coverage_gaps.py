@@ -164,7 +164,7 @@ def test_upload_page_includes_requisition_id(tmp_path: Path):
         # Patch settings.requisition_id directly (avoids singleton caching issue)
         with patch.object(uploader.settings, "requisition_id", req_id):
             with patch("uploader.requests.post", return_value=ok_resp) as mock_post:
-                uploader.upload_page(pdf_path, 1, 1, img)
+                uploader._legacy_upload_page(pdf_path, 1, 1, img)
 
     call_data = mock_post.call_args.kwargs.get("data", {})
     assert call_data.get("requisition_id") == str(req_id)
@@ -178,7 +178,7 @@ def test_upload_page_logs_rejected_items(tmp_path: Path, caplog):
     img = Image.new("RGB", (10, 10))
 
     with patch.dict(os.environ, {"BACKEND_BASE_URL": "http://x", "API_TOKEN": "t"}):
-        from uploader import upload_page
+        from uploader import _legacy_upload_page as upload_page
 
         resp = MagicMock()
         resp.status_code = 200
@@ -204,7 +204,7 @@ def test_upload_page_request_exception_retries(tmp_path: Path):
     img = Image.new("RGB", (10, 10))
 
     with patch.dict(os.environ, {"BACKEND_BASE_URL": "http://x", "API_TOKEN": "t"}):
-        from uploader import upload_page
+        from uploader import _legacy_upload_page as upload_page
 
         with patch(
             "uploader.requests.post",
