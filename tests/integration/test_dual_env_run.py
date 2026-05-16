@@ -172,7 +172,8 @@ async def test_staging_only_routing(configured) -> None:
     assert state.env("staging").pages_uploaded == 2
     # Production untouched.
     assert state.env("production").pages_uploaded == 0
-    assert list(prod.in_progress_dir(settings.machine).iterdir()) == []
+    prod_in = prod.in_progress_dir(settings.machine)
+    assert not prod_in.exists() or list(prod_in.iterdir()) == []
 
 
 @pytest.mark.asyncio
