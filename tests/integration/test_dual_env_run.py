@@ -123,3 +123,79 @@ async def test_unknown_environment_returns_404(configured) -> None:
     resp = await client.post("/run?environment=qa")
     assert resp.status_code == 404
     assert "qa" in resp.json()["detail"]
+
+
+def _recording_post(by_base: dict[str, list[str]]):
+    def fake_post(url, *a, **kw):
+        base = PROD_BASE if url.startswith(PROD_BASE) else STAGING_BASE
+        by_base.setdefault(base, []).append(url)
+        r = MagicMock()
+        r.status_code = 200
+        r.raise_for_status.return_value = None
+        r.json.return_value = {
+            "batch_id": "b",
+            "images": [{"original_file_name": "f"}],
+            "rejected": [],
+        }
+        return r
+
+    return fake_post
+
+
+@pytest.mark.asyncio
+async def test_staging_only_routing(configured) -> None:
+    """Mirror of production-only routing for staging (T026, SC-001/002)."""
+    client, settings, state = configured
+    stg = next(e for e in settings.environments if e.name == "staging")
+    prod = next(e for e in settings.environments if e.name == "production")
+    _make_pdf(stg.watch_dir / "qa.pdf", pages=2)
+
+    def routing(url, *a, **kw):
+        if url.startswith(PROD_BASE):
+            raise AssertionError(f"production backend was hit: {url}")
+        r = MagicMock()
+        r.status_code = 200
+        r.raise_for_status.return_value = None
+        r.json.return_value = {
+            "batch_id": "b",
+            "images": [{"original_file_name": "f"}],
+            "rejected": [],
+        }
+        return r
+
+    with patch("uploader.requests.post", side_effect=routing):
+        resp = await client.post("/run?environment=staging")
+
+    assert resp.status_code == 202
+    assert resp.json()["triggered"] == ["staging"]
+    assert (stg.processed_dir / "qa.pdf").is_file()
+    assert state.env("staging").pages_uploaded == 2
+    # Production untouched.
+    assert state.env("production").pages_uploaded == 0
+    assert list(prod.in_progress_dir(settings.machine).iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_cross_routing_impossible(configured) -> None:
+    """One PDF in each folder; trigger both; zero exchanges (T027, SC-002)."""
+    client, settings, state = configured
+    prod = next(e for e in settings.environments if e.name == "production")
+    stg = next(e for e in settings.environments if e.name == "staging")
+    _make_pdf(prod.watch_dir / "p.pdf", pages=2)
+    _make_pdf(stg.watch_dir / "s.pdf", pages=3)
+
+    by_base: dict[str, list[str]] = {}
+    with patch("uploader.requests.post", side_effect=_recording_post(by_base)):
+        r1 = await client.post("/run?environment=production")
+        r2 = await client.post("/run?environment=staging")
+
+    assert r1.status_code == 202 and r2.status_code == 202
+    # Every production page hit only adg.mpsinc.io; every staging page only dev.
+    assert len(by_base[PROD_BASE]) == 2
+    assert len(by_base[STAGING_BASE]) == 3
+    assert all(u.startswith(PROD_BASE) for u in by_base[PROD_BASE])
+    assert all(u.startswith(STAGING_BASE) for u in by_base[STAGING_BASE])
+    assert (prod.processed_dir / "p.pdf").is_file()
+    assert (stg.processed_dir / "s.pdf").is_file()
+    assert state.env("production").pages_uploaded == 2
+    assert state.env("staging").pages_uploaded == 3
