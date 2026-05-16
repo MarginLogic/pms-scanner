@@ -1,0 +1,19 @@
+#!/bin/bash
+# pms-scanner privileged clock-correction helper (Linux).
+#
+# Invoked by DriftMonitor as: pms-scanner-correct-clock <ntp-source>
+# Prefers chrony's makestep; falls back to a direct timedatectl set-time.
+# Requires root, so it is installed out-of-band with a narrowly scoped
+# sudoers entry — the main pms-scanner process stays unprivileged.
+# See docs/systemd-setup.md.
+set -euo pipefail
+
+# $1 (the NTP source) is accepted for interface parity with the macOS
+# helper; chrony/timesyncd already track the configured source.
+: "${1:?usage: pms-scanner-correct-clock <ntp-source>}"
+
+if command -v chronyc >/dev/null 2>&1; then
+    exec chronyc makestep
+fi
+
+exec timedatectl set-time "$(date -u --rfc-3339=seconds)"

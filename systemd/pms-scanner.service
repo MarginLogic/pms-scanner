@@ -1,0 +1,42 @@
+# pms-scanner — Linux (NUC) systemd --user unit (004, Constitution v3.0.0).
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp systemd/pms-scanner.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pms-scanner.service
+#
+# The main process runs UNPRIVILEGED. Clock correction (if enabled) is
+# delegated to an out-of-band privileged helper installed separately
+# (scripts/linux/pms-scanner-correct-clock). See docs/systemd-setup.md.
+#
+# Adjust WorkingDirectory / ExecStart if the repo or venv lives elsewhere.
+
+[Unit]
+Description=pms-scanner dual-environment PDF uploader
+Documentation=https://github.com/mpsinc/pms-scanner
+# Wait for BOTH environment watch shares before starting. List every
+# distinct mount point any configured ENV_*__WATCH_DIR lives under.
+RequiresMountsFor=/mnt/aria/ARIAscans-prod /mnt/aria/ARIAscans-staging
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/pms-scanner
+EnvironmentFile=%h/.config/pms-scanner/.env
+ExecStart=%h/pms-scanner/.venv/bin/python -m scanner
+
+# Survive crashes / share blips (Linux Deployment Standard).
+Restart=always
+RestartSec=10
+
+# Defensive hardening — the daemon only needs its repo + the SMB mounts.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/pms-scanner /mnt/aria/ARIAscans-prod /mnt/aria/ARIAscans-staging
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

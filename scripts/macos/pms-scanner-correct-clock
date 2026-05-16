@@ -1,0 +1,12 @@
+#!/bin/bash
+# pms-scanner privileged clock-correction helper (macOS).
+#
+# Invoked by DriftMonitor as: pms-scanner-correct-clock <ntp-source>
+# Steps the system clock to the given NTP source. Requires root, so it is
+# installed out-of-band with a narrowly scoped sudoers entry — the main
+# pms-scanner process stays unprivileged. See docs/launchd-setup.md.
+set -euo pipefail
+
+SOURCE="${1:?usage: pms-scanner-correct-clock <ntp-source>}"
+
+exec /usr/bin/sntp -sS "$SOURCE"
