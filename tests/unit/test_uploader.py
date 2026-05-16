@@ -44,7 +44,7 @@ def _ok_resp() -> MagicMock:
 def test_upload_page_success(pdf_path: Path, dummy_image: Image.Image):
     """Successful POST returns True."""
     with patch.dict(os.environ, {"BACKEND_BASE_URL": "http://x", "API_TOKEN": "t"}):
-        from uploader import upload_page
+        from uploader import _legacy_upload_page as upload_page
 
         with patch("uploader.requests.post", return_value=_ok_resp()) as mock_post:
             result = upload_page(pdf_path, 1, 5, dummy_image)
@@ -55,7 +55,7 @@ def test_upload_page_success(pdf_path: Path, dummy_image: Image.Image):
 def test_upload_page_filename_convention(pdf_path: Path, dummy_image: Image.Image):
     """Per-page filename follows {stem}_p{num:03d}.tiff convention."""
     with patch.dict(os.environ, {"BACKEND_BASE_URL": "http://x", "API_TOKEN": "t"}):
-        from uploader import upload_page
+        from uploader import _legacy_upload_page as upload_page
 
         with patch("uploader.requests.post", return_value=_ok_resp()) as mock_post:
             upload_page(pdf_path, 7, 33, dummy_image)
@@ -72,7 +72,7 @@ def test_upload_page_filename_convention(pdf_path: Path, dummy_image: Image.Imag
 def test_upload_page_http_4xx_returns_false(pdf_path: Path, dummy_image: Image.Image):
     """HTTP 4xx returns False without retry."""
     with patch.dict(os.environ, {"BACKEND_BASE_URL": "http://x", "API_TOKEN": "t"}):
-        from uploader import upload_page
+        from uploader import _legacy_upload_page as upload_page
 
         err_resp = _make_response(401, {})
         with patch("uploader.requests.post", return_value=err_resp) as mock_post:
@@ -87,7 +87,7 @@ def test_upload_page_retries_on_5xx(pdf_path: Path, dummy_image: Image.Image):
         os.environ,
         {"BACKEND_BASE_URL": "http://x", "API_TOKEN": "t", "UPLOAD_MAX_RETRIES": "3"},
     ):
-        from uploader import upload_page
+        from uploader import _legacy_upload_page as upload_page
 
         err_resp = _make_response(503, {})
         ok_resp = _make_response(
@@ -116,7 +116,7 @@ def test_upload_page_exhausts_retries_returns_false(
         os.environ,
         {"BACKEND_BASE_URL": "http://x", "API_TOKEN": "t", "UPLOAD_MAX_RETRIES": "2"},
     ):
-        from uploader import upload_page
+        from uploader import _legacy_upload_page as upload_page
 
         err_resp = _make_response(503, {})
         with patch("uploader.requests.post", return_value=err_resp):

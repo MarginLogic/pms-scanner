@@ -25,7 +25,7 @@ from pathlib import Path
 from .config import Settings
 from .pdf_processor import process_pdf
 from .state import AppState, FileResult, PageResult, RunRecord
-from .uploader import upload_page
+from .uploader import _legacy_upload_page as upload_page
 
 logger = logging.getLogger(__name__)
 
