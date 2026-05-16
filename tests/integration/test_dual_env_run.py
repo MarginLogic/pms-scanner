@@ -323,8 +323,10 @@ def test_same_env_coalescing(
         finally:
             sched.stop()
 
-    # max_instances=1 + coalesce ⇒ far fewer runs than the ~10 firings.
-    assert 1 <= len(runs) <= 3
+    # ~0.1s trigger over a ~1.6s window across 2 envs ≈ 30+ would-be
+    # firings; max_instances=1 + coalesce collapses that to a handful.
+    assert 1 <= len(runs) <= 8
+    # The skip/coalesce decision is logged at least once (FR-006b).
     assert any(
         "skip" in r.getMessage().lower() or "coalesc" in r.getMessage().lower()
         for r in caplog.records

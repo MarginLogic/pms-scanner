@@ -15,6 +15,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from apscheduler.events import (  # type: ignore[import-untyped,unused-ignore]
+    EVENT_JOB_MAX_INSTANCES,
+)
 from apscheduler.executors.pool import (  # type: ignore[import-untyped,unused-ignore]
     ThreadPoolExecutor,
 )
@@ -26,6 +29,9 @@ from apscheduler.triggers.cron import (  # type: ignore[import-untyped,unused-ig
 )
 from apscheduler.triggers.date import (  # type: ignore[import-untyped,unused-ignore]
     DateTrigger,
+)
+from apscheduler.triggers.interval import (  # type: ignore[import-untyped,unused-ignore]
+    IntervalTrigger,
 )
 
 if TYPE_CHECKING:
@@ -80,6 +86,9 @@ class Scheduler:
         )
         if self.run_env is None:
             self.run_env = self._default_run_env
+        self._scheduler.add_listener(
+            self._on_max_instances, EVENT_JOB_MAX_INSTANCES
+        )
 
     # -- job action ------------------------------------------------------
 
@@ -111,20 +120,27 @@ class Scheduler:
         )
         self.run_env(env_name)
 
-    def _coalesce_listener(self, event: Any) -> None:
+    def _on_max_instances(self, event: Any) -> None:
         logger.info(
-            "[machine=%s] job %s coalesced — at most one queued follow-up "
-            "(FR-006b)",
+            "[machine=%s] job %s skipped — previous run still in progress; "
+            "coalesced into at most one queued follow-up (FR-006b)",
             self.settings.machine.name,
             getattr(event, "job_id", "?"),
         )
 
     # -- registration / lifecycle ---------------------------------------
 
-    def register(self, *, immediate: bool = False) -> None:
+    def register(
+        self,
+        *,
+        immediate: bool = False,
+        interval_seconds: float | None = None,
+    ) -> None:
         specs = build_jobs(self.settings)
         for spec in specs:
-            if immediate:
+            if interval_seconds is not None:
+                trigger = IntervalTrigger(seconds=interval_seconds)
+            elif immediate:
                 trigger = DateTrigger(
                     run_date=datetime.now() + timedelta(seconds=0.2)
                 )
