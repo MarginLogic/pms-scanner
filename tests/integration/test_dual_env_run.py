@@ -200,3 +200,57 @@ async def test_cross_routing_impossible(configured) -> None:
     assert (stg.processed_dir / "s.pdf").is_file()
     assert state.env("production").pages_uploaded == 2
     assert state.env("staging").pages_uploaded == 3
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_dual_env_trigger(configured) -> None:
+    """POST /run (no env) fans out all enabled envs concurrently (T029).
+
+    Both runs must overlap in wall-clock time and each file ends in its
+    own env's processed/ (US2 acceptance scenario 2; SC-008).
+    """
+    import threading
+    import time as _t
+
+    client, settings, state = configured
+    prod = next(e for e in settings.environments if e.name == "production")
+    stg = next(e for e in settings.environments if e.name == "staging")
+    _make_pdf(prod.watch_dir / "p.pdf", pages=2)
+    _make_pdf(stg.watch_dir / "s.pdf", pages=2)
+
+    lock = threading.Lock()
+    intervals: dict[str, list[float]] = {PROD_BASE: [], STAGING_BASE: []}
+
+    def slow_post(url, *a, **kw):
+        base = PROD_BASE if url.startswith(PROD_BASE) else STAGING_BASE
+        with lock:
+            intervals[base].append(_t.monotonic())
+        _t.sleep(0.05)
+        with lock:
+            intervals[base].append(_t.monotonic())
+        r = MagicMock()
+        r.status_code = 200
+        r.raise_for_status.return_value = None
+        r.json.return_value = {
+            "batch_id": "b",
+            "images": [{"original_file_name": "f"}],
+            "rejected": [],
+        }
+        return r
+
+    with patch("uploader.requests.post", side_effect=slow_post):
+        resp = await client.post("/run")
+
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["machine"] == "macmini"
+    assert set(body["triggered"]) == {"production", "staging"}
+    assert set(body["run_ids"]) == {"production", "staging"}
+
+    # Overlap: production's [first_enter, last_exit] intersects staging's.
+    p_start, p_end = intervals[PROD_BASE][0], intervals[PROD_BASE][-1]
+    s_start, s_end = intervals[STAGING_BASE][0], intervals[STAGING_BASE][-1]
+    assert p_start < s_end and s_start < p_end  # intervals overlap
+
+    assert (prod.processed_dir / "p.pdf").is_file()
+    assert (stg.processed_dir / "s.pdf").is_file()
