@@ -1,3 +1,37 @@
+[project]
+name = "pms-scanner"
+version = "0.4.0"
+description = "Multi-environment, fleet-aware PDF scan batch uploader"
+requires-python = ">=3.12"
+dependencies = [
+    "pymupdf>=1.24.0",
+    "Pillow>=10.3.0",
+    "pytesseract>=0.3.10",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "apscheduler>=3.10.4",
+    "tenacity>=8.3.0",
+    "requests>=2.31.0",
+    "pydantic-settings>=2.2.0",
+    "python-dotenv>=1.0.0",
+    "ntplib>=0.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.6",
+    "pytest-cov>=5.0.0",
+    "pytest-httpserver>=1.0.10",
+    "httpx>=0.27.0",
+    "freezegun>=1.5.0",
+]
+
+[tool.uv]
+# pms-scanner is run as `python -m scanner`, not installed as a package,
+# so resolve/lock dependencies without requiring a build backend.
+package = false
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
