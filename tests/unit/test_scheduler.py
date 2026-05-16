@@ -9,7 +9,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from config import load_settings
 from scheduler import JobSpec, Scheduler, build_jobs
