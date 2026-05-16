@@ -7,3 +7,5 @@ build/
 .venv/
 venv/
 incoming/
+quarantine/
+.coverage

@@ -9,10 +9,11 @@ import os
 import threading
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from config import load_settings
 from scheduler import JobSpec, Scheduler, build_jobs
+from state import BatchRunState, app_state
 
 
 def _settings(tmp_path: Path, *, staging_enabled: bool = True):
@@ -92,3 +93,30 @@ def test_concurrent_jobs_use_distinct_threads(tmp_path: Path) -> None:
 
     assert set(seen) == {"production", "staging"}
     assert seen["production"] != seen["staging"]  # distinct worker threads
+
+
+def test_scheduled_run_wires_emit_to_sse_sink(tmp_path: Path) -> None:
+    """Regression: a SCHEDULED run must build BatchRunner with the SSE
+    emit callback wired, exactly like the dashboard's manual /run path.
+
+    The bug: ``Scheduler._default_run_env`` constructed ``BatchRunner``
+    with no ``emit=``, so scheduled runs updated state silently and
+    pushed zero SSE events — an open dashboard never refreshed and stayed
+    frozen at "idle — no run yet". This pins ``emit`` to
+    ``app_state.emit_event`` so the wiring can't silently regress.
+    """
+    s = _settings(tmp_path)
+    state = BatchRunState(s.machine, [e.name for e in s.environments])
+    # No run_env override -> the default (production) dispatch path runs.
+    sched = Scheduler(s, state=state)
+
+    with patch("batch.BatchRunner") as mock_runner:
+        sched._dispatch("production")
+
+    mock_runner.assert_called_once()
+    emit = mock_runner.call_args.kwargs.get("emit")
+    assert emit is not None, "scheduled run built BatchRunner without emit="
+    # Bound-method equality compares __self__/__func__, so this asserts the
+    # callback is app_state.emit_event (the dashboard's SSE sink).
+    assert emit == app_state.emit_event
+    mock_runner.return_value.run_once.assert_called_once_with()

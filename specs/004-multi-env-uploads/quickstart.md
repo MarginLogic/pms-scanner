@@ -12,8 +12,8 @@ This walks through bringing up `macmini` and `nuc` against shared SMB watch fold
 - Python 3.12 installed (`brew install python@3.12` on macOS; `apt install python3.12` on Debian/Ubuntu).
 - `tesseract` available (`brew install tesseract` / `apt install tesseract-ocr`) — needed by `pdf_processor.py`'s OSD fallback.
 - The SMB shares for production and staging mounted at the per-OS conventional paths:
-  - macOS: `/Volumes/aria/ARIAscans-prod`, `/Volumes/aria/ARIAscans-staging` (mount via Finder → "Connect to Server").
-  - Linux: `/mnt/aria/ARIAscans-prod`, `/mnt/aria/ARIAscans-staging` (mount via `/etc/fstab` with `_netdev,x-systemd.automount` or a dedicated systemd `.mount` unit).
+  - macOS: `/Volumes/aria/ARIAscans`, `/Volumes/aria/ARIAscansTrain` (mount via Finder → "Connect to Server").
+  - Linux: `/mnt/aria/ARIAscans`, `/mnt/aria/ARIAscans` (mount via `/etc/fstab` with `_netdev,x-systemd.automount` or a dedicated systemd `.mount` unit).
 - Each machine's clock is roughly correct (within a few minutes; the NTP gate enforces ±1 s afterward).
 - Operator has API tokens for **both** environments (one for `adg.mpsinc.io`, one for `dev.adg.mpsinc.io`).
 
@@ -40,12 +40,12 @@ NTP__CHECK_INTERVAL_SECONDS=3600
 
 ENVIRONMENTS=production,staging
 
-ENV_PRODUCTION__WATCH_DIR=/Volumes/aria/ARIAscans-prod
+ENV_PRODUCTION__WATCH_DIR=/Volumes/aria/ARIAscans
 ENV_PRODUCTION__BACKEND_BASE_URL=https://adg.mpsinc.io
 ENV_PRODUCTION__API_TOKEN=<prod-token>
 ENV_PRODUCTION__SCHEDULE_OFFSET_SECONDS=0
 
-ENV_STAGING__WATCH_DIR=/Volumes/aria/ARIAscans-staging
+ENV_STAGING__WATCH_DIR=/Volumes/aria/ARIAscansTrain
 ENV_STAGING__BACKEND_BASE_URL=https://dev.adg.mpsinc.io
 ENV_STAGING__API_TOKEN=<staging-token>
 ENV_STAGING__SCHEDULE_OFFSET_SECONDS=15

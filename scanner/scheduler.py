@@ -94,6 +94,7 @@ class Scheduler:
 
     def _default_run_env(self, env_name: str) -> None:
         from .batch import BatchRunner
+        from .state import app_state
 
         assert self.state is not None
         env = next(
@@ -109,6 +110,10 @@ class Scheduler:
             upload_retry_max_wait_seconds=(
                 self.settings.upload_retry_max_wait_seconds
             ),
+            # Mirror the dashboard's manual /run path: scheduled runs MUST
+            # emit SSE events too, or an open dashboard never refreshes
+            # (it only re-fetches /status on load and per SSE event).
+            emit=app_state.emit_event,
         ).run_once()
 
     def _dispatch(self, env_name: str) -> None:

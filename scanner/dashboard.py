@@ -374,6 +374,9 @@ function refresh() {
 }
 
 refresh();
+// Poll fallback: keep the view honest even if SSE drops or no event
+// arrives between scheduled runs.
+setInterval(refresh, 10000);
 const es = new EventSource('/events');
 ['run_started', 'file_started', 'page_done', 'file_done', 'run_done',
  'clock_sync', 'clock_drift_warning'].forEach(t =>
