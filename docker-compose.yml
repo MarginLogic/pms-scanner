@@ -3,7 +3,7 @@ services:
     build: .
     restart: unless-stopped
     volumes:
-      - /Volumes/aria/ARIAscans:/data/incoming   # ARIAscans network share → container watch dir
+      - ${ARIA_DATA_PATH:-/Volumes/aria/ARIAscans}:/data/incoming   # ARIAscans network share → container watch dir
     ports:
       - "8765:8765"
     env_file:
