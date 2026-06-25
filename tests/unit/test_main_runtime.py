@@ -111,7 +111,11 @@ def test_configure_services_registers_jobs_and_wires_dashboard(
     sched = main_mod.configure_services(rt)
     try:
         ids = {j.id for j in sched._scheduler.get_jobs()}
-        assert ids == {"macmini:production", "macmini:staging"}
+        assert ids == {
+            "macmini:production",
+            "macmini:staging",
+            "macmini:daily-reset",
+        }
         # Dashboard wired to the same runtime state.
         assert dashboard._settings is s
         assert dashboard._run_state is rt.state

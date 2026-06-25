@@ -95,6 +95,52 @@ def test_concurrent_jobs_use_distinct_threads(tmp_path: Path) -> None:
     assert seen["production"] != seen["staging"]  # distinct worker threads
 
 
+def test_register_adds_machine_level_daily_reset_job(tmp_path: Path) -> None:
+    """A midnight (00:00:00) counter-reset job is registered per machine."""
+    s = _settings(tmp_path)
+    state = BatchRunState(s.machine, [e.name for e in s.environments])
+    sched = Scheduler(s, state=state)
+    sched.register()
+    try:
+        job = sched._scheduler.get_job("macmini:daily-reset")
+        assert job is not None
+        assert job.max_instances == 1
+        assert job.coalesce is True
+        fields = {f.name: str(f) for f in job.trigger.fields}
+        assert fields["hour"] == "0"
+        assert fields["minute"] == "0"
+        assert fields["second"] == "0"
+    finally:
+        sched.stop()
+
+
+def test_register_without_state_skips_daily_reset_job(tmp_path: Path) -> None:
+    """No state wired -> nothing to reset, so the job is not registered."""
+    s = _settings(tmp_path)
+    sched = Scheduler(s, run_env=lambda _name: None)
+    sched.register()
+    try:
+        assert sched._scheduler.get_job("macmini:daily-reset") is None
+    finally:
+        sched.stop()
+
+
+def test_daily_reset_zeroes_counters_and_emits_event(tmp_path: Path) -> None:
+    s = _settings(tmp_path)
+    state = BatchRunState(s.machine, [e.name for e in s.environments])
+    state.add_files_processed("production", 5)
+    state.add_pages_uploaded("staging", 9)
+    sched = Scheduler(s, state=state)
+
+    events: list[dict] = []
+    with patch.object(app_state, "emit_event", events.append):
+        sched._daily_reset()
+
+    assert state.env("production").files_processed == 0
+    assert state.env("staging").pages_uploaded == 0
+    assert events == [{"type": "counters_reset", "machine": "macmini"}]
+
+
 def test_scheduled_run_wires_emit_to_sse_sink(tmp_path: Path) -> None:
     """Regression: a SCHEDULED run must build BatchRunner with the SSE
     emit callback wired, exactly like the dashboard's manual /run path.

@@ -40,6 +40,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("scanner.scheduler")
 
+# Machine-level (not per-env) job that zeroes the day-scoped dashboard
+# counters at local midnight. Fired by the same in-process BackgroundScheduler
+# as the per-env polls; uses the scheduler's default (local) timezone so the
+# rollover lines up with the operator's wall clock.
+DAILY_RESET_TRIGGER_KWARGS = {"hour": 0, "minute": 0, "second": 0}
+
 
 @dataclass(frozen=True, slots=True)
 class JobSpec:
@@ -125,6 +131,25 @@ class Scheduler:
         )
         self.run_env(env_name)
 
+    @property
+    def daily_reset_job_id(self) -> str:
+        return f"{self.settings.machine.name}:daily-reset"
+
+    def _daily_reset(self) -> None:
+        """Zero the day-scoped counters and nudge open dashboards to refresh."""
+        from .state import app_state
+
+        assert self.state is not None
+        self.state.reset_daily()
+        logger.info(
+            "[machine=%s] daily counter reset — files/pages/errors zeroed "
+            "for all envs",
+            self.settings.machine.name,
+        )
+        app_state.emit_event(
+            {"type": "counters_reset", "machine": self.settings.machine.name}
+        )
+
     def _on_max_instances(self, event: Any) -> None:
         logger.info(
             "[machine=%s] job %s skipped — previous run still in progress; "
@@ -162,6 +187,29 @@ class Scheduler:
                 misfire_grace_time=spec.misfire_grace_time,
                 replace_existing=True,
             )
+        self._register_daily_reset()
+
+    def _register_daily_reset(self) -> None:
+        """Register the machine-level midnight counter-reset job (FR-005).
+
+        Skipped when no ``state`` is wired (e.g. scheduler unit tests that
+        only exercise the per-env poll dispatch) — there is nothing to reset.
+        A misfire grace of one hour lets the reset still run if the process
+        was briefly asleep/down across midnight; longer outages simply skip
+        the cron fire (in-memory counters are already zero after a restart).
+        """
+        if self.state is None:
+            return
+        self._scheduler.add_job(
+            self._daily_reset,
+            trigger=CronTrigger(**DAILY_RESET_TRIGGER_KWARGS),
+            id=self.daily_reset_job_id,
+            name=self.daily_reset_job_id,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+            replace_existing=True,
+        )
 
     def start(self) -> None:
         if not self._scheduler.running:

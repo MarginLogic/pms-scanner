@@ -127,6 +127,22 @@ class BatchRunState:
         with self._lock:
             self.per_env[name].errors.append(record)
 
+    def reset_daily(self) -> None:
+        """Zero every env's day-scoped counters (files/pages/errors).
+
+        Called once a day by the scheduler's midnight job so the dashboard
+        reads as a per-day tally rather than a since-start running total.
+        In-flight activity (``current_*``) and the ``last_run_*`` timestamps
+        are left untouched — they describe live/most-recent work, not a daily
+        count. Guarded by the same ``RLock`` as the ``add_*`` mutators so it
+        can't race a scheduler job recording work at the rollover.
+        """
+        with self._lock:
+            for st in self.per_env.values():
+                st.files_processed = 0
+                st.pages_uploaded = 0
+                st.errors.clear()
+
     def set_current(
         self,
         name: str,

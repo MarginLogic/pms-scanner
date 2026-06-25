@@ -57,6 +57,41 @@ def test_add_error_is_scoped_per_env() -> None:
     assert s.env("production").errors == []
 
 
+def test_reset_daily_zeroes_counters_for_all_envs() -> None:
+    s = _state()
+    s.add_pages_uploaded("production", 7)
+    s.add_files_processed("production", 2)
+    s.add_pages_uploaded("staging", 3)
+    s.add_files_processed("staging", 1)
+    s.add_error(
+        "production", ErrorRecord(filename="x.pdf", message="boom")
+    )
+
+    s.reset_daily()
+
+    for name in ("production", "staging"):
+        st = s.env(name)
+        assert st.files_processed == 0
+        assert st.pages_uploaded == 0
+        assert st.errors == []
+
+
+def test_reset_daily_preserves_live_and_last_run_fields() -> None:
+    s = _state()
+    when = datetime.now(UTC)
+    s.set_current("production", current_file="live.pdf", current_page=4)
+    s.mark_run_started("production", when)
+    s.mark_run_finished("production", when)
+
+    s.reset_daily()
+
+    st = s.env("production")
+    assert st.current_file == "live.pdf"
+    assert st.current_page == 4
+    assert st.last_run_started_at == when
+    assert st.last_run_finished_at == when
+
+
 def test_clock_sync_event_storage() -> None:
     s = _state()
     ok = ClockSyncEvent(datetime.now(UTC), "pool.ntp.org", 0.01, "ok")

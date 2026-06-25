@@ -379,7 +379,7 @@ refresh();
 setInterval(refresh, 10000);
 const es = new EventSource('/events');
 ['run_started', 'file_started', 'page_done', 'file_done', 'run_done',
- 'clock_sync', 'clock_drift_warning'].forEach(t =>
+ 'clock_sync', 'clock_drift_warning', 'counters_reset'].forEach(t =>
   es.addEventListener(t, () => refresh()));
 es.addEventListener('heartbeat', () => {});
 </script>
