@@ -100,13 +100,15 @@ def _detect_orientation(
     return _osd_rotation_from_image(pil_image, page_num, path)
 
 
-def _render_page(page: fitz.Page, dpi: int = 72) -> Image.Image:
-    """Render a fitz page to a PIL Image (RGB) at the given DPI."""
+def _render_page(page: fitz.Page, dpi: int = 300) -> Image.Image:
+    """Render a fitz page to a PIL Image (RGB) at the given DPI.
+
+    Defaults to 300 DPI so uploaded pages preserve scan-quality resolution
+    (no downsampling). PDFs carry no intrinsic raster resolution, so 72 DPI
+    would rasterize scanned pages far below their original fidelity.
+    """
     zoom = dpi / 72.0
-    # Compare the int input, not the float zoom: dpi == 72 is the only
-    # case where zoom is exactly 1.0, so this avoids a float-equality
-    # check while preserving the Identity-matrix fast path.
-    matrix = fitz.Matrix(zoom, zoom) if dpi != 72 else fitz.Identity
+    matrix = fitz.Matrix(zoom, zoom)
     pixmap = page.get_pixmap(matrix=matrix)
     return Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
 
