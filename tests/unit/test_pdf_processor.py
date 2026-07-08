@@ -212,3 +212,41 @@ def test_process_tiff_osd_failure_marks_uncertain(tmp_path: Path) -> None:
     _n, _img, uncertain, rotation = result[0]
     assert uncertain is True
     assert rotation == 0
+
+
+# ---------------------------------------------------------------------------
+# downsample_image — upload-size fallback for oversized pages
+# ---------------------------------------------------------------------------
+
+
+def test_downsample_image_halves_dimensions_at_150_dpi() -> None:
+    from pdf_processor import RENDER_DPI, downsample_image
+
+    assert RENDER_DPI == 300
+    src = Image.new("RGB", (2550, 3300), color=(0, 0, 0))
+    out = downsample_image(src, 150)
+    assert out.size == (1275, 1650)
+
+
+def test_downsample_image_quarters_dimensions_at_75_dpi() -> None:
+    from pdf_processor import downsample_image
+
+    src = Image.new("RGB", (2550, 3300), color=(0, 0, 0))
+    out = downsample_image(src, 75)
+    assert out.size == (638, 825)  # 2550*0.25 = 637.5 → round() → 638
+
+
+def test_downsample_image_noop_at_or_above_base() -> None:
+    from pdf_processor import downsample_image
+
+    src = Image.new("RGB", (100, 100), color=(0, 0, 0))
+    assert downsample_image(src, 300) is src
+    assert downsample_image(src, 600) is src
+
+
+def test_downsample_image_never_zero_sized() -> None:
+    from pdf_processor import downsample_image
+
+    src = Image.new("RGB", (2, 2), color=(0, 0, 0))
+    out = downsample_image(src, 1)  # extreme reduction
+    assert out.width >= 1 and out.height >= 1

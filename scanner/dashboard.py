@@ -180,6 +180,7 @@ async def events() -> StreamingResponse:
 def _run_env_once(env_name: str) -> str:
     """Build a BatchRunner for ``env_name`` and execute one synchronous pass."""
     from .batch import BatchRunner
+    from .notify import Notifier
 
     assert _settings is not None and _run_state is not None
     env = next(e for e in _settings.environments if e.name == env_name)
@@ -192,6 +193,7 @@ def _run_env_once(env_name: str) -> str:
         upload_max_retries=_settings.upload_max_retries,
         upload_retry_max_wait_seconds=_settings.upload_retry_max_wait_seconds,
         emit=_app_state.emit_event,
+        notifier=Notifier(_settings.notify),
     )
     run_id = str(uuid.uuid4())
     logger.info(

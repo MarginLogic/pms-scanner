@@ -63,7 +63,7 @@ from unittest.mock import MagicMock, patch  # noqa: E402
 
 from config import Environment  # noqa: E402
 from pydantic import SecretStr  # noqa: E402
-from uploader import upload_page  # noqa: E402
+from uploader import UploadOutcome, upload_page  # noqa: E402
 
 _ENVS = [
     ("production", "https://adg.mpsinc.io", "prod-token"),
@@ -100,7 +100,10 @@ def test_request_shape_identical_across_envs(
     env = _env(name, url, token, tmp_path=tmp_path)
     img = Image.new("RGB", (40, 40), color=(1, 2, 3))
     with patch("uploader.requests.post", return_value=_ok()) as post:
-        assert upload_page(env, tmp_path / "scan.pdf", 1, 2, img) is True
+        assert (
+            upload_page(env, tmp_path / "scan.pdf", 1, 2, img)
+            is UploadOutcome.ACCEPTED
+        )
 
     kwargs = post.call_args.kwargs
     called_url = (

@@ -17,7 +17,7 @@ import pytest
 from config import Environment
 from PIL import Image
 from pydantic import SecretStr
-from uploader import upload_page
+from uploader import UploadOutcome, upload_page
 
 
 @pytest.fixture()
@@ -68,7 +68,7 @@ def test_posts_to_env_url_with_api_key(
     env = _env(name, url, token, tmp_path=tmp_path)
     with patch("uploader.requests.post", return_value=_ok()) as post:
         ok = upload_page(env, tmp_path / "scan.pdf", 1, 3, image)
-    assert ok is True
+    assert ok is UploadOutcome.ACCEPTED
     called_url = post.call_args.args[0] if post.call_args.args else post.call_args.kwargs["url"]
     assert called_url == f"{url}/api/scanned-images/upload"
     headers = post.call_args.kwargs["headers"]
@@ -125,7 +125,7 @@ def test_4xx_returns_false_no_retry(image: Image.Image, tmp_path: Path) -> None:
         "uploader.requests.post", return_value=_resp(403, {})
     ) as post:
         ok = upload_page(env, tmp_path / "x.pdf", 1, 1, image)
-    assert ok is False
+    assert ok is UploadOutcome.REJECTED
     assert post.call_count == 1
 
 
@@ -137,7 +137,7 @@ def test_5xx_retried_then_succeeds(image: Image.Image, tmp_path: Path) -> None:
             ok = upload_page(
                 env, tmp_path / "x.pdf", 1, 1, image, max_retries=3
             )
-    assert ok is True
+    assert ok is UploadOutcome.ACCEPTED
 
 
 def test_token_never_appears_in_logs(
@@ -190,7 +190,7 @@ def test_rejected_items_logged_and_returns_false(
     with caplog.at_level(logging.WARNING, logger="scanner.uploader"):
         with patch("uploader.requests.post", return_value=resp):
             ok = upload_page(env, tmp_path / "x.pdf", 1, 1, image)
-    assert ok is False
+    assert ok is UploadOutcome.REJECTED
     assert any("rejected" in r.getMessage().lower() for r in caplog.records)
 
 
@@ -211,5 +211,5 @@ def test_network_exception_retries_then_exhausts(
                 ok = upload_page(
                     env, tmp_path / "x.pdf", 1, 1, image, max_retries=3
                 )
-    assert ok is False
+    assert ok is UploadOutcome.FAILED
     assert any("Exhausted" in r.getMessage() for r in caplog.records)
