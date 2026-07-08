@@ -100,6 +100,7 @@ class Scheduler:
 
     def _default_run_env(self, env_name: str) -> None:
         from .batch import BatchRunner
+        from .notify import Notifier
         from .state import app_state
 
         assert self.state is not None
@@ -120,6 +121,7 @@ class Scheduler:
             # emit SSE events too, or an open dashboard never refreshes
             # (it only re-fetches /status on load and per SSE event).
             emit=app_state.emit_event,
+            notifier=Notifier(self.settings.notify),
         ).run_once()
 
     def _dispatch(self, env_name: str) -> None:

@@ -15,6 +15,7 @@ import scanner.batch  # noqa: E402,F401
 import scanner.config  # noqa: E402,F401
 import scanner.dashboard  # noqa: E402,F401
 import scanner.machine  # noqa: E402,F401
+import scanner.notify  # noqa: E402,F401
 import scanner.ntp  # noqa: E402,F401
 import scanner.pdf_processor  # noqa: E402,F401
 import scanner.scheduler  # noqa: E402,F401
@@ -26,6 +27,7 @@ for _name in (
     "config",
     "dashboard",
     "machine",
+    "notify",
     "ntp",
     "pdf_processor",
     "scheduler",

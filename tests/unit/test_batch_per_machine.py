@@ -266,3 +266,83 @@ def test_run_once_processing_exception_marks_failed(tmp_path: Path) -> None:
         r.run_once()
     assert (r.env.watch_dir / "g.pdf").is_file()
     assert r.state.env("production").errors[-1].message
+
+
+# ---------------------------------------------------------------------------
+# Oversized-page downsample fallback + unrecoverable quarantine
+# ---------------------------------------------------------------------------
+
+from uploader import UploadOutcome  # noqa: E402
+
+
+def test_rejected_page_recovered_by_downsampling(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A page the backend refuses full-size is retried smaller; the file still
+    completes to processed/ and is NOT quarantined or looped."""
+    import logging
+
+    r = _runner0(tmp_path)
+    _pdf(r.env.watch_dir / "big.pdf", pages=1)
+
+    # Full-resolution upload rejected (e.g. HTTP 422 too large); the first
+    # downsample step (150 DPI) is accepted.
+    outcomes = iter([UploadOutcome.REJECTED, UploadOutcome.ACCEPTED])
+    with caplog.at_level(logging.WARNING, logger="scanner.batch"):
+        with _patch("batch.upload_page", side_effect=lambda *a, **k: next(outcomes)):
+            r.run_once()
+
+    assert (r.env.processed_dir / "big.pdf").is_file()  # completed
+    assert not (r.env.watch_dir / "big.pdf").exists()  # not looped
+    assert not (r.env.failed_dir / "big.pdf").exists()  # not quarantined
+    assert r.state.env("production").files_processed == 1
+    assert r.state.env("production").pages_uploaded == 1
+    assert any("downsampl" in rec.getMessage().lower() for rec in caplog.records)
+
+
+def test_unrecoverable_rejection_quarantined_not_looped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A page rejected even at the lowest DPI moves the file to failed/ so it is
+    never re-scanned — the fix for the claim→reject→return loop."""
+    import logging
+    from unittest.mock import MagicMock
+
+    env = _env(tmp_path)
+    m = MachineIdentity("macmini")
+    notifier = MagicMock()
+    r = BatchRunner(
+        env, m, BatchRunState(m, [env.name]), settle_seconds=0, notifier=notifier
+    )
+    _pdf(env.watch_dir / "bad.pdf", pages=1)
+
+    with caplog.at_level(logging.ERROR, logger="scanner.batch"):
+        with _patch("batch.upload_page", return_value=UploadOutcome.REJECTED):
+            r.run_once()
+
+    assert (env.failed_dir / "bad.pdf").is_file()  # quarantined
+    assert not (env.watch_dir / "bad.pdf").exists()  # NOT returned to watch
+    assert not (env.processed_dir / "bad.pdf").exists()
+    assert r.state.env("production").files_processed == 0
+    assert r.state.env("production").errors
+    assert any("quarantined" in rec.getMessage().lower() for rec in caplog.records)
+    # Support is notified with the file name + quarantine folder.
+    notifier.notify_quarantine.assert_called_once()
+    kw = notifier.notify_quarantine.call_args.kwargs
+    assert kw["filename"] == "bad.pdf"
+    assert kw["folder"] == str(env.failed_dir)
+    assert kw["env"] == "production" and kw["machine"] == "macmini"
+
+
+def test_transient_failure_still_returns_to_watch(tmp_path: Path) -> None:
+    """Transient (server/network) failures are NOT quarantined — the file goes
+    back to the watch dir for a legitimate later retry."""
+    r = _runner0(tmp_path)
+    _pdf(r.env.watch_dir / "t.pdf", pages=1)
+
+    with _patch("batch.upload_page", return_value=UploadOutcome.FAILED):
+        r.run_once()
+
+    assert (r.env.watch_dir / "t.pdf").is_file()  # retryable
+    assert not (r.env.failed_dir / "t.pdf").exists()  # not quarantined
+    assert not (r.env.processed_dir / "t.pdf").exists()

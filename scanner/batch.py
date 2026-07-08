@@ -16,15 +16,23 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from PIL import Image
+
 from .config import Environment
 from .machine import MachineIdentity
-from .pdf_processor import process_pdf
+from .notify import Notifier
+from .pdf_processor import downsample_image, process_pdf
 from .state import BatchRunState, ErrorRecord
-from .uploader import upload_page
+from .uploader import UploadOutcome, upload_page
 
 logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTS = {".pdf", ".tif", ".tiff"}
+
+# When the backend permanently rejects a page (e.g. HTTP 422 because the page
+# is too large), re-upload ONLY that page at progressively lower resolution
+# before giving up on the file. Ordered high→low.
+DOWNSAMPLE_DPI_LADDER = (150, 75)
 
 EventEmitter = Callable[[dict[str, object]], None]
 
@@ -55,6 +63,7 @@ class BatchRunner:
         upload_max_retries: int = 3,
         upload_retry_max_wait_seconds: int = 10,
         emit: EventEmitter | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self.env = env
         self.machine = machine
@@ -64,6 +73,7 @@ class BatchRunner:
         self._max_retries = upload_max_retries
         self._retry_max_wait = upload_retry_max_wait_seconds
         self._emit = emit
+        self._notifier = notifier
         self._tag = f"[env={env.name} machine={machine.name}]"
         self._ensure_dirs()
 
@@ -74,6 +84,7 @@ class BatchRunner:
         self.env.in_progress_root.mkdir(parents=True, exist_ok=True)
         in_self.mkdir(parents=True, exist_ok=True)
         self.env.processed_dir.mkdir(parents=True, exist_ok=True)
+        self.env.failed_dir.mkdir(parents=True, exist_ok=True)
         if os.name == "posix":
             os.chmod(in_self, 0o700)
 
@@ -172,31 +183,28 @@ class BatchRunner:
         name = claimed.name
         self.state.set_current(self.env.name, current_file=name, current_page=0)
         self._fire("file_started", filename=name)
+        status = "failed"
         try:
             pages = process_pdf(claimed)
             total = len(pages)
             self.state.set_current(self.env.name, total_pages=total)
             all_ok = True
+            unrecoverable = False
             for page_num, image, _uncertain, rotation in pages:
-                ok = upload_page(
-                    self.env,
-                    claimed,
-                    page_num,
-                    total,
-                    image,
-                    timeout_seconds=self._timeout,
-                    max_retries=self._max_retries,
-                    retry_max_wait_seconds=self._retry_max_wait,
+                outcome, dpi_used = self._upload_page_with_downsample(
+                    claimed, page_num, total, image
                 )
-                if ok:
+                if outcome is UploadOutcome.ACCEPTED:
                     self.state.add_pages_uploaded(self.env.name, 1)
                 else:
                     all_ok = False
+                    if outcome is UploadOutcome.REJECTED:
+                        unrecoverable = True
                     self.state.add_error(
                         self.env.name,
                         ErrorRecord(
                             filename=name,
-                            message="upload failed",
+                            message=f"upload {outcome.value}",
                             page_num=page_num,
                         ),
                     )
@@ -206,23 +214,12 @@ class BatchRunner:
                     filename=name,
                     page_num=page_num,
                     total_pages=total,
-                    success=ok,
+                    success=outcome is UploadOutcome.ACCEPTED,
                     rotation_applied=rotation,
+                    downsampled_to_dpi=dpi_used,
                 )
 
-            if all_ok:
-                os.rename(claimed, self.env.processed_dir / name)
-                self.state.add_files_processed(self.env.name, 1)
-                status = "completed"
-                logger.info("%s completed %s → processed/", self._tag, name)
-            else:
-                os.rename(claimed, self.env.watch_dir / name)
-                status = "failed"
-                logger.warning(
-                    "%s returned %s to watch dir after upload failure(s)",
-                    self._tag,
-                    name,
-                )
+            status = self._dispose(claimed, name, all_ok, unrecoverable)
         except Exception as exc:  # noqa: BLE001
             logger.error("%s error processing %s: %s", self._tag, name, exc)
             self.state.add_error(
@@ -237,6 +234,93 @@ class BatchRunner:
         finally:
             self.state.set_current(self.env.name, current_file=None)
             self._fire("file_done", filename=name, status=status)
+
+    def _upload_page_with_downsample(
+        self, claimed: Path, page_num: int, total: int, image: Image.Image
+    ) -> tuple[UploadOutcome, int | None]:
+        """Upload one page, shrinking it if the backend refuses it as too large.
+
+        Returns ``(outcome, dpi_used)`` where ``dpi_used`` is the reduced DPI
+        that got the page accepted (``None`` if the full-resolution page was
+        accepted or no downsample succeeded). A permanent ``REJECTED`` triggers
+        a retry of ONLY this page down the :data:`DOWNSAMPLE_DPI_LADDER`; a
+        transient ``FAILED`` is returned as-is so the whole file is retried
+        later rather than needlessly degraded.
+        """
+        outcome = self._upload(claimed, page_num, total, image)
+        if outcome is not UploadOutcome.REJECTED:
+            return outcome, None
+
+        for dpi in DOWNSAMPLE_DPI_LADDER:
+            smaller = downsample_image(image, dpi)
+            retry = self._upload(claimed, page_num, total, smaller)
+            if retry is UploadOutcome.ACCEPTED:
+                logger.warning(
+                    "%s page %d/%d of %s accepted after downsampling to %d DPI",
+                    self._tag, page_num, total, claimed.name, dpi,
+                )
+                return retry, dpi
+            if retry is UploadOutcome.FAILED:
+                # Transient error mid-ladder — stop degrading; retry file later.
+                return retry, None
+
+        logger.error(
+            "%s page %d/%d of %s still rejected at %d DPI — unrecoverable",
+            self._tag, page_num, total, claimed.name, DOWNSAMPLE_DPI_LADDER[-1],
+        )
+        return UploadOutcome.REJECTED, None
+
+    def _upload(
+        self, claimed: Path, page_num: int, total: int, image: Image.Image
+    ) -> UploadOutcome:
+        return upload_page(
+            self.env,
+            claimed,
+            page_num,
+            total,
+            image,
+            timeout_seconds=self._timeout,
+            max_retries=self._max_retries,
+            retry_max_wait_seconds=self._retry_max_wait,
+        )
+
+    def _dispose(
+        self, claimed: Path, name: str, all_ok: bool, unrecoverable: bool
+    ) -> str:
+        """Move the finished file to its destination and return a status label."""
+        if all_ok:
+            os.rename(claimed, self.env.processed_dir / name)
+            self.state.add_files_processed(self.env.name, 1)
+            logger.info("%s completed %s → processed/", self._tag, name)
+            return "completed"
+        if unrecoverable:
+            # The backend permanently refused a page even downsampled. Quarantine
+            # to failed/ so it is NOT re-scanned — this is what previously caused
+            # the endless claim→reject→return-to-watch loop.
+            os.rename(claimed, self.env.failed_dir / name)
+            logger.error(
+                "%s quarantined %s → failed/ (unrecoverable upload rejection)",
+                self._tag,
+                name,
+            )
+            if self._notifier is not None:
+                self._notifier.notify_quarantine(
+                    filename=name,
+                    folder=str(self.env.failed_dir),
+                    env=self.env.name,
+                    machine=self.machine.name,
+                    reason="backend permanently rejected a page even after "
+                    "downsampling to the lowest fallback resolution",
+                )
+            return "failed_permanent"
+        # Only transient failures: return to the watch dir for a later retry.
+        os.rename(claimed, self.env.watch_dir / name)
+        logger.warning(
+            "%s returned %s to watch dir after transient upload failure(s)",
+            self._tag,
+            name,
+        )
+        return "failed"
 
     # -- events ----------------------------------------------------------
 

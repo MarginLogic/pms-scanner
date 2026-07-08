@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 _TIFF_EXTS = {".tif", ".tiff"}
 
+# Base render resolution. Pages are rasterized at this DPI (see ``_render_page``)
+# to preserve scan fidelity; ``downsample_image`` reduces a single page relative
+# to this when the backend rejects it as too large.
+RENDER_DPI = 300
+
 
 def process_pdf(path: Path) -> list[tuple[int, Image.Image, bool, int]]:
     """
@@ -96,11 +101,11 @@ def _detect_orientation(
         return pdf_rotation, False
 
     # Tier 2: pytesseract OSD on the rendered page
-    pil_image = _render_page(page, dpi=300)
+    pil_image = _render_page(page, dpi=RENDER_DPI)
     return _osd_rotation_from_image(pil_image, page_num, path)
 
 
-def _render_page(page: fitz.Page, dpi: int = 300) -> Image.Image:
+def _render_page(page: fitz.Page, dpi: int = RENDER_DPI) -> Image.Image:
     """Render a fitz page to a PIL Image (RGB) at the given DPI.
 
     Defaults to 300 DPI so uploaded pages preserve scan-quality resolution
@@ -178,6 +183,27 @@ def _osd_rotation_from_image(
             exc,
         )
         return 0, True
+
+
+def downsample_image(
+    image: Image.Image, to_dpi: int, *, base_dpi: int = RENDER_DPI
+) -> Image.Image:
+    """Return *image* scaled from ``base_dpi`` down to ``to_dpi``.
+
+    Used as an upload-size fallback: a page the backend rejects as too large is
+    re-encoded at a lower effective resolution. Only the single offending page
+    is shrunk — the rest of the document keeps full ``RENDER_DPI`` fidelity.
+    LANCZOS resampling keeps scanned text legible at the reduced size. A
+    ``to_dpi`` at or above ``base_dpi`` is a no-op (returns the original).
+    """
+    if to_dpi >= base_dpi:
+        return image
+    factor = to_dpi / base_dpi
+    new_size = (
+        max(1, round(image.width * factor)),
+        max(1, round(image.height * factor)),
+    )
+    return image.resize(new_size, Image.Resampling.LANCZOS)
 
 
 def _parse_osd_string(osd_text: str) -> tuple[int, float]:

@@ -62,6 +62,38 @@ class NTPSettings(BaseModel):
         return v
 
 
+class NotifySettings(BaseModel):
+    """SMTP settings for operator email alerts on unrecoverable failures.
+
+    Fully optional: email is only sent when ``is_configured`` is true (a host,
+    from-address and support-address are all present). Left unset, the scanner
+    still quarantines failed files — it just logs a warning instead of emailing.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    use_tls: bool = True
+    from_addr: str | None = None
+    support_addr: str = "support@mpsinc.io"
+    timeout_seconds: int = 30
+
+    @field_validator("smtp_host", "smtp_username", "from_addr", mode="before")
+    @classmethod
+    def _blank_is_none(cls, v: object) -> object:
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @property
+    def is_configured(self) -> bool:
+        """True when enough is set to actually deliver mail."""
+        return bool(self.smtp_host and self.from_addr and self.support_addr)
+
+
 class _EnvBlock(BaseModel):
     """Raw, all-optional view of one ``ENV_<NAME>__*`` block.
 
@@ -110,6 +142,16 @@ class Environment(BaseModel):
     def processed_dir(self) -> Path:
         return Path(self.watch_dir) / "processed"
 
+    @property
+    def failed_dir(self) -> Path:
+        """Quarantine for files the backend permanently refused.
+
+        A file moved here is NOT re-scanned (``run_once`` only reads the watch
+        dir and this machine's in-progress subfolder), which is what stops the
+        claim→reject→return loop for unrecoverable uploads.
+        """
+        return Path(self.watch_dir) / "failed"
+
 
 class AppSettings(BaseSettings):
     """Top-level settings: machine identity + NTP + environment list."""
@@ -125,6 +167,7 @@ class AppSettings(BaseSettings):
 
     machine_identity: str = ""
     ntp: NTPSettings = Field(default_factory=NTPSettings)
+    notify: NotifySettings = Field(default_factory=NotifySettings)
 
     environments_raw: str = Field(
         default="",

@@ -19,6 +19,7 @@ import logging
 import threading
 import time
 from collections import deque
+from enum import Enum
 from pathlib import Path
 
 import requests
@@ -27,6 +28,21 @@ from PIL import Image
 from .config import Environment
 
 logger = logging.getLogger("scanner.uploader")
+
+
+class UploadOutcome(Enum):
+    """Result of a single :func:`upload_page` call.
+
+    The distinction lets the caller react correctly: a permanent ``REJECTED``
+    (e.g. HTTP 422 "too large", or a backend body-level rejection) will never
+    succeed if the same bytes are re-sent, so the caller may downsample and
+    retry or quarantine the file — whereas a transient ``FAILED`` is worth
+    retrying the whole file later.
+    """
+
+    ACCEPTED = "accepted"  # backend stored the page
+    REJECTED = "rejected"  # permanent client-side rejection (4xx / body-rejected)
+    FAILED = "failed"  # transient (5xx / network) failure, retries exhausted
 
 # Client-side rate limiter: at most 60 HTTP requests per 60-second window,
 # including retries. Backend enforces the same quota and returns 429 otherwise.
@@ -61,12 +77,14 @@ def upload_page(
     timeout_seconds: int = 30,
     max_retries: int = 3,
     retry_max_wait_seconds: int = 10,
-) -> bool:
+) -> UploadOutcome:
     """Upload one rendered page to ``env``'s backend.
 
-    Returns ``True`` if the backend accepted the image, ``False`` on any
-    permanent or exhausted-retry failure. The destination and token come
-    solely from ``env``.
+    Returns :class:`UploadOutcome`: ``ACCEPTED`` if the backend stored the
+    image, ``REJECTED`` for a permanent client-side refusal (HTTP 4xx or a
+    body-level rejection — retrying the same bytes is futile), or ``FAILED``
+    when transient (5xx/network) errors exhaust ``max_retries``. The
+    destination and token come solely from ``env``.
     """
     filename = f"{path.stem}_p{page_num:03d}.tiff"
     url = f"{env.backend_base_url}/api/scanned-images/upload"
@@ -111,7 +129,9 @@ def upload_page(
                     batch_id,
                     rej.get("reason"),
                 )
-            return bool(accepted)
+            # ``accepted`` empty means nothing was stored (body-level rejection
+            # or an empty response) — a permanent outcome, not a retryable one.
+            return UploadOutcome.ACCEPTED if accepted else UploadOutcome.REJECTED
 
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else 0
@@ -125,7 +145,7 @@ def upload_page(
                     total_pages,
                     exc,
                 )
-                return False
+                return UploadOutcome.REJECTED
             logger.warning(
                 "[env=%s] HTTP %d uploading %s (page %d/%d), attempt %d/%d",
                 env.name,
@@ -162,7 +182,7 @@ def upload_page(
         page_num,
         total_pages,
     )
-    return False
+    return UploadOutcome.FAILED
 
 
 def _encode_tiff(image: Image.Image) -> bytes:
